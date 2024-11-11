@@ -1,6 +1,4 @@
 from flask import Flask, request
-
-
 import base64
 import gzip
 import json
@@ -14,13 +12,12 @@ import hmac
 
 app = Flask(__name__)
 
-
 WORKSPACE_ID = os.environ.get('WORKSPACE_ID')
 SHARED_KEY = os.environ.get('SHARED_KEY')
 
 if (WORKSPACE_ID is None or SHARED_KEY is None):
+    print("ERROR: Missing WORKSPACE_ID or SHARED_KEY")
     raise Exception("Please add azure sentinel customer_id and shared_key to azure key vault/application settings of web app") 
-
 # modified the original code to not use the workspace id
 # and shared key from the environment variables as this would
 # expose them to strata which is not appropriate
@@ -28,6 +25,7 @@ BASIC_AUTH_USERNAME = os.environ.get('BASIC_AUTH_USERNAME')
 BASIC_AUTH_PASSWORD = os.environ.get('BASIC_AUTH_PASSWORD')
 
 if (BASIC_AUTH_USERNAME is None or BASIC_AUTH_PASSWORD is None):
+    print("ERROR: Missing BASIC_AUTH_USERNAME or BASIC_AUTH_PASSWORD")
     raise Exception("Please add basic auth username and password to azure key vault/application settings of web app")
 
 BASIC_AUTH = base64.b64encode("{}:{}".format(BASIC_AUTH_USERNAME, BASIC_AUTH_PASSWORD).encode()).decode("utf-8")
@@ -45,40 +43,40 @@ FAILURE_RESPONSE = json.dumps({'success':False})
 SUCCESS_RESPONSE = json.dumps({'success':True})
 APPLICATION_JSON = {'ContentType':'application/json'}
 
-
 class UnAuthorizedException(Exception):
     pass
-
 
 class ProcessingException(Exception):
     pass
 
-
 # Build the API signature
 def build_signature(customer_id, shared_key, date, content_length, method, content_type, resource):
+    print("Building signature...")
     x_headers = 'x-ms-date:' + date
     string_to_hash = "{}\n{}\n{}\n{}\n{}".format(method, str(content_length), content_type, x_headers, resource)
     bytes_to_hash = bytes(string_to_hash, encoding="utf-8")
     decoded_key = base64.b64decode(shared_key)
     encoded_hash = base64.b64encode(hmac.new(decoded_key, bytes_to_hash, digestmod=hashlib.sha256).digest()).decode()
     authorization = "SharedKey {}:{}".format(customer_id,encoded_hash)
+    print("Signature built successfully.")
     return authorization
 
-
 def post(headers, body, isAuth):
+    print(f"Sending POST request with auth={isAuth}...")
     auth_string = ' auth ' if isAuth else ' '
     response = POOL.post(URI, data=body, headers=headers)
     if (response.status_code >= 200 and response.status_code <= 299):
+        print(f"POST request succeeded with status: {response.status_code}")
         logging.debug('accepted {}'.format(auth_string))
     else:
         resp_body = str(response.json())
         resp_headers = json.dumps(headers)
         failure_resp = "failure{}response details: {}{}{}".format(auth_string, response.status_code, resp_body, resp_headers)
+        print(f"ERROR: POST request failed with status: {response.status_code}")
         raise ProcessingException("ProcessingException for{}: {}".format(auth_string, failure_resp)) 
 
-
-# Build Auth and send request to the POST API
 def post_data(customer_id, shared_key, body, log_type, length=0):
+    print("Posting data with newly generated authorization...")
     rfc1123date = datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
     signature = build_signature(customer_id, shared_key, rfc1123date, length, POST_METHOD, CONTENT_TYPE, RESOURCE)
     headers = {
@@ -89,77 +87,79 @@ def post_data(customer_id, shared_key, body, log_type, length=0):
     }
     post(headers, body, False)
 
-
-# Use Auth and send request to the POST API
 def post_data_auth(headers, body):
+    print("Posting data with request's authorization header...")
     post(headers, body, True)
-
 
 @app.route('/', methods=['POST'])
 def func():
+    print("Received POST request at '/' route")
     auth_headers = request.headers.get("authorization").split(",")
     body = request.get_data()
     basic_auth_header = ''
     shared_key_header = ''
     try:
+        print("Processing authorization headers...")
         for auth in auth_headers:
             if "Basic" in auth:
                 basic_auth_header = auth.strip()
                 if (basic_auth_header.split("Basic ")[1] != BASIC_AUTH):
-                    logging.error("UnAuthorized Basic header mismatch %s vs %s", basic_auth_header, BASIC_AUTH)
+                    print("Unauthorized: Basic header mismatch.")
                     raise UnAuthorizedException()
             if "SharedKey" in auth:
                 shared_key_header = auth.strip()
+
         if basic_auth_header == '':
-            logging.error("UnAuthorized Basic header")
-            raise UnAuthorizedException()   
+            print("Unauthorized: Missing Basic header.")
+            raise UnAuthorizedException()
+
         log_type = request.headers.get(LOG_TYPE)
         xms_date = ", ".join([each.strip() for each in request.headers.get('x-ms-date').split(",")]).replace("UTC", "GMT")
         headers = {
-             'Content-Type': 'application/json; charset=UTF-8',
-             'Authorization': shared_key_header,
-             'Log-Type': log_type,
-             'x-ms-date': xms_date        
+            'Content-Type': 'application/json; charset=UTF-8',
+            'Authorization': shared_key_header,
+            'Log-Type': log_type,
+            'x-ms-date': xms_date        
         }
-        logging.debug(headers)
+        print("Headers for request constructed:", headers)
+
         # Decompress payload
         decompressed = gzip.decompress(body)
-        logging.debug(decompressed)  
+        print("Payload decompressed successfully.")
         decomp_body_length = len(decompressed)
         if decomp_body_length == 0:
+            print(f"ERROR: Decompressed body is empty. Body: {body}")
             if len(body) == 0:
-              logging.error("decompressed: {} vs body: {}".format(decompressed, body))
               return FAILURE_RESPONSE, 400, APPLICATION_JSON 
             else:
               return FAILURE_RESPONSE, 500, APPLICATION_JSON 
-        # Use Authorization header from request
         post_data_auth(headers, decompressed)
-        logging.debug("processed request auth")
+        print("Request processed with request's authorization header.")
     except ValueError as e:
-        logging.error("ValueError: {}{}{}".format(headers, e, decompressed))
-        return FAILURE_RESPONSE, 500, APPLICATION_JSON 
+        print(f"ERROR: ValueError encountered: {e}")
+        return FAILURE_RESPONSE, 500, APPLICATION_JSON
     except UnAuthorizedException:
-        return FAILURE_RESPONSE, 401, APPLICATION_JSON 
+        print("ERROR: Unauthorized access attempt.")
+        return FAILURE_RESPONSE, 401, APPLICATION_JSON
     except ProcessingException as e:
-        logging.debug(e)
+        print(f"ERROR: ProcessingException encountered: {e}")
         try:
-            # Create Authorization header
             post_data(WORKSPACE_ID, SHARED_KEY, decompressed, log_type, length=decomp_body_length)
-            logging.debug("processed request by creating auth")
+            print("Request re-processed with newly generated authorization header.")
         except ProcessingException as err:
-            logging.error("Exception: {}{}{}".format(headers, err, decompressed))
-            return FAILURE_RESPONSE, 500, APPLICATION_JSON 
+            print(f"ERROR: Failed retry with generated authorization: {err}")
+            return FAILURE_RESPONSE, 500, APPLICATION_JSON
     except Exception as e:
-        logging.error(e)
-        return FAILURE_RESPONSE, 500, APPLICATION_JSON 
-       
-    return SUCCESS_RESPONSE, 200, APPLICATION_JSON 
+        print(f"ERROR: Unexpected error occurred: {e}")
+        return FAILURE_RESPONSE, 500, APPLICATION_JSON
 
+    return SUCCESS_RESPONSE, 200, APPLICATION_JSON
 
 @app.route('/health', methods=['GET'])
 def health():
-    return SUCCESS_RESPONSE, 200, APPLICATION_JSON 
-
+    print("Received health check request.")
+    return SUCCESS_RESPONSE, 200, APPLICATION_JSON
 
 if __name__ == '__main__':
-   app.run()
+    logging.basicConfig(level=logging.DEBUG)  # Enable detailed logging
+    app.run()
