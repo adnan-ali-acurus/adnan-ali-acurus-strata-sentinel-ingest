@@ -8,6 +8,7 @@ import requests
 import datetime
 import hashlib
 import hmac
+import traceback
 
 
 app = Flask(__name__)
@@ -146,24 +147,27 @@ def func():
         
     except ValueError as e:
         logging.error("ValueError encountered: %s", e)
+        logging.error("Traceback: %s", traceback.format_exc())  # Log the full traceback
         return FAILURE_RESPONSE, 500, APPLICATION_JSON
     except UnAuthorizedException:
         logging.error("Unauthorized access attempt detected")
         return FAILURE_RESPONSE, 401, APPLICATION_JSON
     except ProcessingException as e:
         logging.error("ProcessingException encountered: %s", e)
+        logging.error("Traceback: %s", traceback.format_exc())  # Log the full traceback
         try:
             post_data(WORKSPACE_ID, SHARED_KEY, decompressed, log_type, length=decomp_body_length)
             logging.debug("Processed request by creating auth header")
         except ProcessingException as err:
             logging.error("Exception during processing: %s", err)
+            logging.error("Traceback: %s", traceback.format_exc())  # Log the full traceback
             return FAILURE_RESPONSE, 500, APPLICATION_JSON
     except Exception as e:
         logging.error("Unexpected error occurred: %s", e)
+        logging.error("Traceback: %s", traceback.format_exc())  # Log the full traceback
         return FAILURE_RESPONSE, 500, APPLICATION_JSON
 
     return SUCCESS_RESPONSE, 200, APPLICATION_JSON
-
 
 @app.route('/health', methods=['GET'])
 def health():
