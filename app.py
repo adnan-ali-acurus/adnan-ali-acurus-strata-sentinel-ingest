@@ -95,17 +95,18 @@ def post_data_auth(headers, body):
 @app.route('/', methods=['POST'])
 def func():
     logging.debug("Received POST request at '/' route")
+
     auth_headers = request.headers.get("authorization")
-    
-    if auth_headers is None:
-        logging.error("Authorization header missing in request")
-        return FAILURE_RESPONSE, 401, APPLICATION_JSON
+    if not auth_headers:
+        logging.error("Authorization header is missing in the request")
+        return FAILURE_RESPONSE, 400, APPLICATION_JSON
 
     logging.debug("Processing authorization headers...")
     auth_headers = auth_headers.split(",")
     body = request.get_data()
     basic_auth_header = ''
     shared_key_header = ''
+    
     try:
         for auth in auth_headers:
             if "Basic" in auth:
@@ -120,8 +121,6 @@ def func():
             logging.error("Unauthorized: Basic header is missing")
             raise UnAuthorizedException()
         
-        logging.debug("Authorization headers processed successfully")
-        
         log_type = request.headers.get(LOG_TYPE)
         xms_date = ", ".join([each.strip() for each in request.headers.get('x-ms-date').split(",")]).replace("UTC", "GMT")
         
@@ -134,14 +133,19 @@ def func():
         logging.debug("Headers constructed: %s", headers)
 
         # Decompress payload
-        decompressed = gzip.decompress(body)
-        logging.debug("Payload decompressed successfully")
+        try:
+            decompressed = gzip.decompress(body)
+            logging.debug("Payload decompressed successfully")
+        except Exception as e:
+            logging.error("Error while decompressing payload: %s", e)
+            return FAILURE_RESPONSE, 500, APPLICATION_JSON
 
         decomp_body_length = len(decompressed)
         if decomp_body_length == 0:
             logging.error("Decompressed payload length is 0")
             return FAILURE_RESPONSE, 400, APPLICATION_JSON
         
+        logging.debug("Calling post_data_auth with decompressed body")
         post_data_auth(headers, decompressed)
         logging.debug("Request processed with provided authorization headers")
         
