@@ -93,67 +93,77 @@ def post_data_auth(headers, body):
 
 @app.route('/', methods=['POST'])
 def func():
-    print("Received POST request at '/' route")
-    auth_headers = request.headers.get("authorization").split(",")
+    logging.debug("Received POST request at '/' route")
+    auth_headers = request.headers.get("authorization")
+    
+    if auth_headers is None:
+        logging.error("Authorization header missing in request")
+        return FAILURE_RESPONSE, 401, APPLICATION_JSON
+
+    logging.debug("Processing authorization headers...")
+    auth_headers = auth_headers.split(",")
     body = request.get_data()
     basic_auth_header = ''
     shared_key_header = ''
     try:
-        print("Processing authorization headers...")
         for auth in auth_headers:
             if "Basic" in auth:
                 basic_auth_header = auth.strip()
                 if (basic_auth_header.split("Basic ")[1] != BASIC_AUTH):
-                    print("Unauthorized: Basic header mismatch.")
+                    logging.error("Unauthorized: Basic header mismatch %s vs %s", basic_auth_header, BASIC_AUTH)
                     raise UnAuthorizedException()
             if "SharedKey" in auth:
                 shared_key_header = auth.strip()
-
+        
         if basic_auth_header == '':
-            print("Unauthorized: Missing Basic header.")
+            logging.error("Unauthorized: Basic header is missing")
             raise UnAuthorizedException()
-
+        
+        logging.debug("Authorization headers processed successfully")
+        
         log_type = request.headers.get(LOG_TYPE)
         xms_date = ", ".join([each.strip() for each in request.headers.get('x-ms-date').split(",")]).replace("UTC", "GMT")
+        
         headers = {
             'Content-Type': 'application/json; charset=UTF-8',
             'Authorization': shared_key_header,
             'Log-Type': log_type,
             'x-ms-date': xms_date        
         }
-        print("Headers for request constructed:", headers)
+        logging.debug("Headers constructed: %s", headers)
 
         # Decompress payload
         decompressed = gzip.decompress(body)
-        print("Payload decompressed successfully.")
+        logging.debug("Payload decompressed successfully")
+
         decomp_body_length = len(decompressed)
         if decomp_body_length == 0:
-            print(f"ERROR: Decompressed body is empty. Body: {body}")
-            if len(body) == 0:
-              return FAILURE_RESPONSE, 400, APPLICATION_JSON 
-            else:
-              return FAILURE_RESPONSE, 500, APPLICATION_JSON 
+            logging.error("Decompressed payload length is 0")
+            return FAILURE_RESPONSE, 400, APPLICATION_JSON
+        
         post_data_auth(headers, decompressed)
-        print("Request processed with request's authorization header.")
+        logging.debug("Request processed with provided authorization headers")
+        
     except ValueError as e:
-        print(f"ERROR: ValueError encountered: {e}")
+        logging.error("ValueError encountered: %s", e)
         return FAILURE_RESPONSE, 500, APPLICATION_JSON
     except UnAuthorizedException:
-        print("ERROR: Unauthorized access attempt.")
+        logging.error("Unauthorized access attempt detected")
         return FAILURE_RESPONSE, 401, APPLICATION_JSON
     except ProcessingException as e:
-        print(f"ERROR: ProcessingException encountered: {e}")
+        logging.error("ProcessingException encountered: %s", e)
         try:
             post_data(WORKSPACE_ID, SHARED_KEY, decompressed, log_type, length=decomp_body_length)
-            print("Request re-processed with newly generated authorization header.")
+            logging.debug("Processed request by creating auth header")
         except ProcessingException as err:
-            print(f"ERROR: Failed retry with generated authorization: {err}")
+            logging.error("Exception during processing: %s", err)
             return FAILURE_RESPONSE, 500, APPLICATION_JSON
     except Exception as e:
-        print(f"ERROR: Unexpected error occurred: {e}")
+        logging.error("Unexpected error occurred: %s", e)
         return FAILURE_RESPONSE, 500, APPLICATION_JSON
 
     return SUCCESS_RESPONSE, 200, APPLICATION_JSON
+
 
 @app.route('/health', methods=['GET'])
 def health():
